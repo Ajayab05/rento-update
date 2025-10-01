@@ -1,0 +1,29 @@
+version: '3.8'
+services:
+  db:
+    image: postgres:15
+    restart: always
+    environment:
+      POSTGRES_DB: rento
+      POSTGRES_USER: rento_user
+      POSTGRES_PASSWORD: rento_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - db_data:/var/lib/postgresql/data
+
+  app:
+    build: .
+    depends_on:
+      - db
+    environment:
+      DATABASE_URL: postgres://rento_user:rento_password@db:5432/rento
+    ports:
+      - "3000:3000"
+    # Uncomment if you want to use .env for other secrets
+    # env_file:
+    #   - .env
+
+volumes:
+  db_data:
+

@@ -1,0 +1,11 @@
+node_modules
+.next
+Dockerfile
+.dockerignore
+.git
+.gitignore
+pnpm-lock.yaml
+*.log
+# .env is needed for build
+# .env.* can be ignored if not needed for build
+
