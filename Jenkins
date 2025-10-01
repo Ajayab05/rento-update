@@ -1,0 +1,51 @@
+pipeline {
+    agent any
+
+    environment {
+        IMAGE_NAME = "ajayab05/rento-app"
+        TAG = "${env.BUILD_NUMBER}"
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                git url: 'https://github.com/Ajayab05/rento-update.git', branch: 'main', credentialsId: 'github'
+            }
+        }
+
+        stage('Create .env') {
+            steps {
+                writeFile file: '.env', text: '''
+DATABASE_URL=postgres://rento_user:rento_password@db:5432/rento
+'''
+            }
+        }
+
+        stage('Build Docker Image') {
+            steps {
+                sh "docker build -t ${IMAGE_NAME}:${TAG} ."
+            }
+        }
+
+        stage('Trivy Scan') {
+            steps {
+                sh "docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:latest image ${IMAGE_NAME}:${TAG}"
+            }
+        }
+
+        stage('Push Docker Image') {
+            steps {
+                withCredentials([usernamePassword(credentialsId: 'dockerhub-creds', usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
+                    sh 'echo $DOCKER_PASS | docker login -u $DOCKER_USER --password-stdin'
+                    sh "docker push ${IMAGE_NAME}:${TAG}"
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            cleanWs()
+        }
+    }
+}
