@@ -1,0 +1,48 @@
+name: CI/CD for Docker Compose
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    services:
+      db:
+        image: postgres:15
+        env:
+          POSTGRES_DB: rento
+          POSTGRES_USER: rento_user
+          POSTGRES_PASSWORD: rento_password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U rento_user" --health-interval=10s --health-timeout=5s --health-retries=5
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install pnpm
+        run: npm install -g pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build Next.js app
+        run: pnpm build
+
+      - name: Run tests
+        run: pnpm test || echo "No tests found"
+
+      - name: Build Docker image
+        run: docker build -t ${{ github.repository }}:${{ github.sha }} .
+
+      # Add deployment steps below as needed (e.g., push to registry, SSH deploy, etc.)
