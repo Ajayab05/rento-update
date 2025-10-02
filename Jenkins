@@ -4,12 +4,13 @@ pipeline {
     environment {
         IMAGE_NAME = "ajayab05/rento-app"
         TAG = "${env.BUILD_NUMBER}"
+        CONTAINER_NAME = "rento-latest"
     }
 
     stages {
         stage('Checkout') {
             steps {
-                git url: 'https://github.com/Ajayab05/rento-update.git', branch: 'main', credentialsId: 'github'
+                git url: 'https://github.com/Ajayab05/rento-update.git', branch: 'main', credentialsId: 'Github'
             }
         }
 
@@ -23,7 +24,15 @@ DATABASE_URL=postgres://rento_user:rento_password@db:5432/rento
 
         stage('Build Docker Image') {
             steps {
-                sh "docker build -t ${IMAGE_NAME}:${TAG} ."
+                script {
+                    def gitCommit = sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim()
+                    sh """
+                        docker build \
+                          --label build.number=${TAG} \
+                          --label git.commit=${gitCommit} \
+                          -t ${IMAGE_NAME}:${TAG} .
+                    """
+                }
             }
         }
 
@@ -37,7 +46,53 @@ DATABASE_URL=postgres://rento_user:rento_password@db:5432/rento
             steps {
                 withCredentials([usernamePassword(credentialsId: 'dockerhub-creds', usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
                     sh 'echo $DOCKER_PASS | docker login -u $DOCKER_USER --password-stdin'
+
+                    // Push original tag
                     sh "docker push ${IMAGE_NAME}:${TAG}"
+
+                    // Tag and push as 'latest'
+                    sh """
+                        docker tag ${IMAGE_NAME}:${TAG} ${IMAGE_NAME}:latest
+                        docker push ${IMAGE_NAME}:latest
+                    """
+                }
+            }
+        }
+
+        stage('Run Latest Docker Image') {
+            steps {
+                script {
+                    sh """
+                        docker rm -f ${CONTAINER_NAME} || true
+                        docker pull ${IMAGE_NAME}:latest
+                        docker run -d \
+                          --name ${CONTAINER_NAME} \
+                          -p 3000:3000 \
+                          --env-file .env \
+                          ${IMAGE_NAME}:latest
+                    """
+                }
+                echo "🚀 App container '${CONTAINER_NAME}' is now running from the latest image!"
+            }
+        }
+
+        stage('Show Container Info') {
+    steps {
+        script {
+            echo "🔍 Displaying container details for '${CONTAINER_NAME}'"
+            sh '''
+                echo "➡️ docker ps output:"
+                docker ps --filter "name=rento-latest"
+
+                echo "\\n➡️ Container inspect (selected fields):"
+                docker inspect rento-latest --format '
+Container ID: {{.Id}}
+Image: {{.Config.Image}}
+Status: {{.State.Status}}
+Started At: {{.State.StartedAt}}
+Ports:
+{{range $p, $conf := .NetworkSettings.Ports}}  - {{$p}} -> {{(index $conf 0).HostPort}}{{"\\n"}}{{end}}'
+            '''
                 }
             }
         }
