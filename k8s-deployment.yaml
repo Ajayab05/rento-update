@@ -31,18 +31,3 @@ spec:
               value: "rento"
             - name: DATABASE_SSL_ENABLED
               value: "false"
-
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: rento-service
-  namespace: rento
-spec:
-  type: NodePort
-  selector:
-    app: rento-app
-  ports:
-    - port: 80           # the port used inside the cluster
-      targetPort: 3000   # the container port
-      nodePort: 30080    # access port on your node
