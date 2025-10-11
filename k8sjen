@@ -1,0 +1,142 @@
+pipeline {
+    agent any
+
+    environment {
+        GIT_REPO = 'https://github.com/Ajayab05/rento-update.git'
+        IMAGE_NAME = 'ajayab05/rento-app'
+        TAG = "build-${BUILD_NUMBER}"
+        K8S_NAMESPACE = 'rento'
+        CONFIGMAP_NAME = 'rento-config'
+        SECRET_NAME = 'rento-secret'
+        SERVICE_TYPE = 'LoadBalancer'
+        SERVICE_PORT = 80
+        TARGET_PORT = 3000
+    }
+
+    stages {
+        stage('Checkout Repository') {
+            steps {
+                git url: "${GIT_REPO}", branch: 'main'
+            }
+        }
+
+        stage('Lint, TypeScript & Audit') {
+            parallel {
+                stage('ESLint') { steps { sh 'npx eslint . --ext .js,.jsx,.ts,.tsx || true' } }
+                stage('TypeScript') { when { expression { fileExists('tsconfig.json') } }; steps { sh 'npx tsc --noEmit || true' } }
+                stage('NPM Audit') { steps { sh 'npm audit --audit-level=high || true' } }
+            }
+        }
+
+        stage('SonarQube Analysis') {
+            steps {
+                withSonarQubeEnv('sonar') {
+                    sh '''
+                        docker run --rm \
+                            -v $(pwd):/usr/src \
+                            -w /usr/src \
+                            sonarsource/sonar-scanner-cli:latest \
+                            sonar-scanner \
+                                -Dsonar.projectKey=RentoApp \
+                                -Dsonar.sources=. \
+                                -Dsonar.host.url=$SONAR_HOST_URL \
+                                -Dsonar.login=$SONAR_AUTH_TOKEN
+                    '''
+                }
+            }
+        }
+
+        stage('Build & Push Docker Image') {
+            steps {
+                withCredentials([usernamePassword(credentialsId: 'dockerhub-creds', usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
+                    sh """
+                        docker build -t $IMAGE_NAME:$TAG .
+                        echo "$DOCKER_PASS" | docker login -u "$DOCKER_USER" --password-stdin
+                        docker push $IMAGE_NAME:$TAG
+                    """
+                }
+            }
+        }
+
+        stage('Kubernetes Deployment') {
+            steps {
+                withCredentials([file(credentialsId: 'kubeconfig-file', variable: 'KUBECONFIG')]) {
+
+                    // Step 1: Ensure namespace exists
+                    sh """
+                        if ! kubectl --kubeconfig=$KUBECONFIG get namespace $K8S_NAMESPACE >/dev/null 2>&1; then
+                            echo "Namespace '$K8S_NAMESPACE' does not exist. Creating..."
+                            kubectl --kubeconfig=$KUBECONFIG create namespace $K8S_NAMESPACE
+                        else
+                            echo "Namespace '$K8S_NAMESPACE' already exists. Skipping."
+                        fi
+                    """
+
+                    // Step 2: Apply ConfigMap & Secret
+                    withCredentials([
+                        string(credentialsId: 'db-url', variable: 'DB_URL'),
+                        string(credentialsId: 'db-username', variable: 'DB_USER'),
+                        string(credentialsId: 'db-password', variable: 'DB_PASS')
+                    ]) {
+                        sh """
+                            kubectl --kubeconfig=$KUBECONFIG apply -n $K8S_NAMESPACE -f - <<EOF
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: $CONFIGMAP_NAME
+data:
+  DATABASE_LOGGING: "true"
+  DATABASE_SYNCHRONIZE: "false"
+  DATABASE_MAX_CONNECTIONS: "100"
+  DATABASE_SSL_ENABLED: "false"
+  DATABASE_REJECT_UNAUTHORIZED: "false"
+  NODE_ENV: "production"
+EOF
+
+                            kubectl --kubeconfig=$KUBECONFIG apply -n $K8S_NAMESPACE -f - <<EOF
+apiVersion: v1
+kind: Secret
+metadata:
+  name: $SECRET_NAME
+type: Opaque
+stringData:
+  DATABASE_URL: "$DB_URL"
+  DATABASE_USERNAME: "$DB_USER"
+  DATABASE_PASSWORD: "$DB_PASS"
+EOF
+                        """
+                    }
+
+                    // Step 3: Deploy/Update App
+                    sh """
+                        kubectl --kubeconfig=$KUBECONFIG apply -f k8s-deployment.yaml -n $K8S_NAMESPACE
+                        kubectl --kubeconfig=$KUBECONFIG set image deployment/rento-app rento-app=$IMAGE_NAME:$TAG -n $K8S_NAMESPACE
+                        kubectl --kubeconfig=$KUBECONFIG apply -f k8s-service.yaml -n $K8S_NAMESPACE
+                    """
+
+                    // Step 4: Verify Deployment & Rollback
+                    script {
+                        try {
+                            sh "kubectl --kubeconfig=$KUBECONFIG rollout status deployment/rento-app -n $K8S_NAMESPACE --timeout=120s"
+                        } catch (err) {
+                            echo "Deployment failed! Rolling back..."
+                            sh "kubectl --kubeconfig=$KUBECONFIG rollout undo deployment/rento-app -n $K8S_NAMESPACE"
+                            error("Deployment failed, rollback executed.")
+                        }
+                    }
+
+                    // Step 5: Show resources
+                    sh """
+                        kubectl --kubeconfig=$KUBECONFIG get pods -n $K8S_NAMESPACE
+                        kubectl --kubeconfig=$KUBECONFIG get svc -n $K8S_NAMESPACE
+                        kubectl --kubeconfig=$KUBECONFIG logs -l app=rento-app -n $K8S_NAMESPACE --tail=30
+                    """
+                }
+            }
+        }
+    }
+
+    post {
+        always { echo "Pipeline finished!" }
+    }
+}
