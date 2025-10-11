@@ -34,11 +34,23 @@ NODE_ENV=production
             }
         }
 
+        stage('Clean Up Old Containers & Images') {
+            steps {
+                echo "Stopping and removing old containers and images..."
+                sh '''
+                    # Stop all running containers for this project
+                    docker compose -f $COMPOSE_FILE down --rmi all --volumes --remove-orphans || true
+
+                    # Optional: remove dangling images to free space
+                    docker image prune -f
+                '''
+            }
+        }
+
         stage('Build & Run App') {
             steps {
                 echo "Building Docker image and running app..."
                 sh '''
-                    docker compose down || true
                     docker compose --env-file .env -f $COMPOSE_FILE up -d --build
                 '''
             }
