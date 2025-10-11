@@ -4,10 +4,10 @@ metadata:
   name: rento-service
   namespace: rento
 spec:
+  type: LoadBalancer
   selector:
     app: rento-app
   ports:
-    - protocol: TCP
-      port: 80
+    - port: 80
       targetPort: 3000
-  type: ClusterIP
+      protocol: TCP
