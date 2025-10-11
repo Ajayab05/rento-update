@@ -15,7 +15,7 @@ spec:
     spec:
       containers:
         - name: rento-app
-          image: ajayab05/rento-app:latest   # replace with your image if needed
+          image: ajayab05/rento-app:latest   # replace with your image tag
           ports:
             - containerPort: 3000
           env:
@@ -31,3 +31,39 @@ spec:
               value: "rento"
             - name: DATABASE_SSL_ENABLED
               value: "false"
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rento-service
+  namespace: rento
+spec:
+  type: NodePort
+  selector:
+    app: rento-app
+  ports:
+    - port: 80
+      targetPort: 3000
+      protocol: TCP
+      nodePort: 30080   # external port for access
+
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: rento-ingress
+  namespace: rento
+  annotations:
+    kubernetes.io/ingress.class: nginx
+spec:
+  rules:
+    - http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: rento-service
+                port:
+                  number: 80
