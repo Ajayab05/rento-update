@@ -1,0 +1,62 @@
+pipeline {
+    agent any
+
+    environment {
+        COMPOSE_FILE = 'docker-compose.yml'
+        GIT_REPO = 'https://github.com/Ajayab05/rento-update.git'
+    }
+
+    stages {
+        stage('Checkout Repository') {
+            steps {
+                echo "Cloning repository..."
+                git url: "${GIT_REPO}", branch: 'main'
+            }
+        }
+
+        stage('Create .env File') {
+            steps {
+                echo "Creating .env file..."
+                writeFile file: '.env', text: '''
+DATABASE_URL=postgres://postgres:admin123@rento.czwg6q626yxo.ap-south-1.rds.amazonaws.com:5432/rento
+DATABASE_USERNAME=postgres
+DATABASE_PASSWORD=admin123
+DATABASE_HOST=rento.czwg6q626yxo.ap-south-1.rds.amazonaws.com
+DATABASE_PORT=5432
+DATABASE_NAME=rento
+DATABASE_LOGGING=true
+DATABASE_SYNCHRONIZE=false
+DATABASE_MAX_CONNECTIONS=100
+DATABASE_SSL_ENABLED=false
+DATABASE_REJECT_UNAUTHORIZED=false
+NODE_ENV=production
+'''
+            }
+        }
+
+        stage('Build & Run App') {
+            steps {
+                echo "Building Docker image and running app..."
+                sh '''
+                    docker compose down || true
+                    docker compose --env-file .env -f $COMPOSE_FILE up -d --build
+                '''
+            }
+        }
+
+        stage('Verify DB & Logs') {
+            steps {
+                echo "Verifying app container logs..."
+                sh '''
+                    docker compose logs app | tail -n 30
+                '''
+            }
+        }
+    }
+
+    post {
+        always {
+            echo "Pipeline finished!"
+        }
+    }
+}
