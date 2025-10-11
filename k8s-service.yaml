@@ -1,19 +1,13 @@
-apiVersion: networking.k8s.io/v1
-kind: Ingress
+apiVersion: v1
+kind: Service
 metadata:
-  name: rento-ingress
+  name: rento-service
   namespace: rento
-  annotations:
-    kubernetes.io/ingress.class: nginx
 spec:
-  rules:
-    - host: rento.local  # dummy host
-      http:
-        paths:
-          - path: /
-            pathType: Prefix
-            backend:
-              service:
-                name: rento-service
-                port:
-                  number: 80
+  type: NodePort
+  selector:
+    app: rento-app
+  ports:
+    - port: 80           # port inside the cluster
+      targetPort: 3000   # container port
+      nodePort: 30080    # port to access via node IP
