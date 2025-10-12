@@ -15,9 +15,10 @@ spec:
     spec:
       containers:
         - name: rento-app
-          image: ajayab05/rento-app:latest   # replace with your image tag
+          image: ajayab05/rento-app:PLACEHOLDER_TAG
           ports:
             - containerPort: 3000
+
           env:
             - name: DATABASE_HOST
               value: "rento.czwg6q626yxo.ap-south-1.rds.amazonaws.com"
