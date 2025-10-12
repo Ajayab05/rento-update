@@ -1,0 +1,3 @@
+{
+  "issues": [{"engineId":"Trivy","ruleId":"CVE-2024-21538","severity":"CRITICAL","type":"VULNERABILITY","primaryLocation":{"message":"cross-spawn: regular expression denial of service","filePath":"cross-spawn"}}]
+}
