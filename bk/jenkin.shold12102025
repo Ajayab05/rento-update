@@ -1,0 +1,210 @@
+pipeline {
+    agent any
+
+    environment {
+        GIT_REPO       = 'https://github.com/Ajayab05/rento-update.git'
+        IMAGE_NAME     = 'ajayab05/rento-app'
+        TAG            = "build-${BUILD_NUMBER}"
+        K8S_NAMESPACE  = 'rento'
+        CONFIGMAP_NAME = 'rento-config'
+        SECRET_NAME    = 'rento-secret'
+        SERVICE_TYPE   = 'LoadBalancer'
+        SERVICE_PORT   = 80
+        TARGET_PORT    = 3000
+    }
+
+    stages {
+
+        stage('Checkout Repository') {
+            steps {
+                git url: "${GIT_REPO}", branch: 'main'
+            }
+        }
+
+        stage('Lint, TypeScript & Audit') {
+            parallel {
+                stage('ESLint') {
+                    steps { sh 'npx eslint . --ext .js,.jsx,.ts,.tsx || true' }
+                }
+                stage('TypeScript') {
+                    when { expression { fileExists('tsconfig.json') } }
+                    steps { sh 'npx tsc --noEmit || true' }
+                }
+                stage('NPM Audit') {
+                    steps { sh 'npm audit --audit-level=high || true' }
+                }
+            }
+        }
+
+        stage('SonarQube Analysis') {
+            steps {
+                withSonarQubeEnv('sonar') {
+                    sh '''
+                        docker run --rm \
+                            -v "$PWD":/usr/src \
+                            -w /usr/src \
+                            sonarsource/sonar-scanner-cli:latest \
+                            sonar-scanner \
+                                -Dsonar.projectKey=RentoApp \
+                                -Dsonar.sources=. \
+                                -Dsonar.host.url="$SONAR_HOST_URL" \
+                                -Dsonar.login="$SONAR_AUTH_TOKEN"
+                    '''
+                }
+            }
+        }
+
+        stage('Build Docker Image') {
+            steps {
+                sh '''
+                    docker build -t "$IMAGE_NAME:$TAG" .
+                '''
+            }
+        }
+
+        stage('Image Security Scan (Trivy + SonarQube)') {
+            steps {
+                echo "🔍 Running Trivy scan for $IMAGE_NAME:$TAG ..."
+                // Scan image and produce JSON report
+                sh '''
+                    docker run --rm \
+                        -v /var/run/docker.sock:/var/run/docker.sock \
+                        -v $PWD:/workspace \
+                        aquasec/trivy:latest image \
+                        --format json \
+                        --output /workspace/trivy-report.json \
+                        --severity HIGH,CRITICAL \
+                        "$IMAGE_NAME:$TAG"
+                '''
+
+                echo "📄 Trivy JSON report generated at trivy-report.json"
+                archiveArtifacts artifacts: 'trivy-report.json', fingerprint: true
+
+                // Convert Trivy report into SonarQube generic issue format
+                sh '''
+                    cat <<EOF > sonar-trivy.json
+{
+  "issues": $(jq -c '[.Results[].Vulnerabilities[]? | {
+    engineId: "Trivy",
+    ruleId: .VulnerabilityID,
+    severity: (
+      if .Severity == "CRITICAL" then "BLOCKER"
+      elif .Severity == "HIGH" then "CRITICAL"
+      elif .Severity == "MEDIUM" then "MAJOR"
+      elif .Severity == "LOW" then "MINOR"
+      else "INFO"
+      end
+    ),
+    type: "VULNERABILITY",
+    primaryLocation: {
+      message: .Title,
+      filePath: .PkgName
+    }
+  }]' trivy-report.json)
+}
+EOF
+
+                '''
+                echo "🧩 Generated SonarQube-compatible issue file: sonar-trivy.json"
+
+                // Import into SonarQube
+                withSonarQubeEnv('sonar') {
+                    sh '''
+                        docker run --rm \
+                            -v "$PWD":/usr/src \
+                            -w /usr/src \
+                            sonarsource/sonar-scanner-cli:latest \
+                            sonar-scanner \
+                                -Dsonar.projectKey=RentoApp \
+                                -Dsonar.sources=. \
+                                -Dsonar.externalIssuesReportPaths=sonar-trivy.json \
+                                -Dsonar.host.url="$SONAR_HOST_URL" \
+                                -Dsonar.login="$SONAR_AUTH_TOKEN"
+                    '''
+                }
+            }
+        }
+
+        stage('Push Docker Image') {
+            steps {
+                withCredentials([usernamePassword(credentialsId: 'dockerhub-creds', usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
+                    sh '''
+                        echo "$DOCKER_PASS" | docker login -u "$DOCKER_USER" --password-stdin
+                        docker push "$IMAGE_NAME:$TAG"
+                        docker logout
+                    '''
+                }
+            }
+        }
+
+        stage('Kubernetes Deployment') {
+            steps {
+                withCredentials([file(credentialsId: 'kubeconfig-file', variable: 'KUBECONFIG')]) {
+                    withCredentials([
+                        string(credentialsId: 'db-url', variable: 'DB_URL'),
+                        string(credentialsId: 'db-username', variable: 'DB_USER'),
+                        string(credentialsId: 'db-password', variable: 'DB_PASS')
+                    ]) {
+                        sh '''
+                            set -eu
+
+                            echo "Checking if namespace $K8S_NAMESPACE exists..."
+                            if ! kubectl get namespace "$K8S_NAMESPACE" >/dev/null 2>&1; then
+                                echo "Namespace $K8S_NAMESPACE does not exist. Creating..."
+                                kubectl create namespace "$K8S_NAMESPACE"
+                            fi
+
+                            echo "Applying ConfigMap..."
+                            cat <<EOF | kubectl apply -n "$K8S_NAMESPACE" -f -
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: $CONFIGMAP_NAME
+data:
+  DATABASE_LOGGING: "true"
+  DATABASE_SYNCHRONIZE: "false"
+  DATABASE_MAX_CONNECTIONS: "100"
+  DATABASE_SSL_ENABLED: "false"
+  DATABASE_REJECT_UNAUTHORIZED: "false"
+  NODE_ENV: "production"
+EOF
+
+                            echo "Applying Secret..."
+                            cat <<EOF | kubectl apply -n "$K8S_NAMESPACE" -f -
+apiVersion: v1
+kind: Secret
+metadata:
+  name: $SECRET_NAME
+type: Opaque
+stringData:
+  DATABASE_URL: "$DB_URL"
+  DATABASE_USERNAME: "$DB_USER"
+  DATABASE_PASSWORD: "$DB_PASS"
+EOF
+
+                            echo "Deploying application..."
+                            kubectl apply -f k8s-deployment.yaml -n "$K8S_NAMESPACE"
+                            kubectl set image deployment/rento-app rento-app="$IMAGE_NAME:$TAG" -n "$K8S_NAMESPACE" --record
+
+                            echo "Waiting for rollout..."
+                            if ! kubectl rollout status deployment/rento-app -n "$K8S_NAMESPACE" --timeout=120s; then
+                                echo "Deployment failed! Rolling back..."
+                                kubectl rollout undo deployment/rento-app -n "$K8S_NAMESPACE"
+                                exit 1
+                            fi
+
+                            kubectl get pods -n "$K8S_NAMESPACE"
+                            kubectl get svc -n "$K8S_NAMESPACE"
+                        '''
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            echo "✅ Pipeline finished!"
+        }
+    }
+}
