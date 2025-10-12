@@ -14,8 +14,9 @@ spec:
         app: rento-app
     spec:
       containers:
-        - name: rento-app
-          image: ajayab05/rento-app:PLACEHOLDER_TAG
+  - name: rento-app
+    image: ajayab05/rento-app:${TAG}   # <-- replace PLACEHOLDER_TAG with ${TAG}
+    imagePullPolicy: Always
           ports:
             - containerPort: 3000
 
